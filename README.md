@@ -136,9 +136,9 @@ To replicate the Open Vocabulary Detection results:
 ## :framed_picture: Qualitative Visualization
 | RNCDL                                         | GDINO                                         | RCNN_CLIP                                | Ours                                         |
 |-----------------------------------------------|-----------------------------------------------|-----------------------------------------------|----------------------------------------------|
-| <img src="Visualizations/img_1_RNCDL.jpg" width="200"/> | <img src="Visualizations/img_1_GDINO.jpg" width="200"/> | <img src="Visualizations/img_1_MaskRCNN_CLIP.jpg" width="200"/> | <img src="Visualizations/img_1_Ours.jpg" width="200"/> |
-| <img src="Visualizations/img_2_RNCDL.jpg" width="200"/> | <img src="Visualizations/img_2_GDINO.jpg" width="200"/> | <img src="Visualizations/img_2_MaskRCNN_CLIP.jpg" width="200"/> | <img src="Visualizations/img_2_Ours.jpg" width="200"/> |
-| <img src="Visualizations/img_3_RNCDL.jpg" width="200"/> | <img src="Visualizations/img_3_GDINO.jpg" width="200"/> | <img src="Visualizations/img_3_MaskRCNN_CLIP.jpg" width="200"/> | <img src="Visualizations/img_3_Ours.jpg" width="200"/> |
+| <img src="Visualization/img_1_RNCDL.jpg" width="200"/> | <img src="Visualization/img_1_GDINO.jpg" width="200"/> | <img src="Visualization/img_1_MaskRCNN_CLIP.jpg" width="200"/> | <img src="Visualization/img_1_Ours.jpg" width="200"/> |
+| <img src="Visualization/img_2_RNCDL.jpg" width="200"/> | <img src="Visualization/img_2_GDINO.jpg" width="200"/> | <img src="Visualization/img_2_MaskRCNN_CLIP.jpg" width="200"/> | <img src="Visualization/img_2_Ours.jpg" width="200"/> |
+| <img src="Visualization/img_3_RNCDL.jpg" width="200"/> | <img src="Visualization/img_3_GDINO.jpg" width="200"/> | <img src="Visualization/img_3_MaskRCNN_CLIP.jpg" width="200"/> | <img src="Visualization/img_3_Ours.jpg" width="200"/> |
 
 
 ## :email: Contact
