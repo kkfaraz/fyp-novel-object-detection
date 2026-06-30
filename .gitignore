@@ -1,0 +1,83 @@
+# Ignore Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore system-specific files
+.DS_Store
+Thumbs.db
+._*
+
+# Ignore logs and other runtime-generated files
+*.out
+*.err
+*.log
+results_*.txt
+
+# Ignore user-specific IDE and editor settings
+.vscode/
+.idea/
+
+# --- Deep Learning & Data Exclusions ---
+# Ignore model weights and checkpoints
+*.pth
+*.pt
+*.h5
+*.pkl
+*.weights
+*.run
+*.zip
+
+# Ignore datasets and large data directories
+datasets/DETECTRON2_DATASETS/
+outputs/
+outputs_coco/
+outputs_lvis/
+Results/
+L_Results/
+C_Results/
+visualizations/*.jpg
+visualizations/*.png
+
+# Ignore virtual environments
+venv/
+env/
+.env
+
+# Ignore specific large files seen in workspace
+GDINO_weights/
+SAM_weights/
+MaskRCNN_COCO_OVD/
+maskrcnn_coco/
+maskrcnn_v2/
+MRCNN/
+Mask-RCNN
+moco_v2_800ep_pretrain.pkl
+GDINO_weights.pth
+SAM_weights.pth
+MaskRCNN_v2.pt
+mask_rcnn_coco.h5
+cuda_11.3.run
+
+# Ignore API keys and sensitive text files
+*_API.txt
+OPENAPI.txt
+.env
+
+# --- Web App Exclusions ---
+node_modules/
+dist/
+FYP_WEB/frontend/node_modules/
+FYP_WEB/frontend/dist/
+FYP_WEB/backend/venv/
+FYP_WEB/backend/temp/
+FYP_WEB/backend/uploads/
+FYP_WEB/backend/checkpoints/
+FYP_WEB/backend/*.pid
+FYP_WEB/backend/*.log
+outputs_voc/
+cache/

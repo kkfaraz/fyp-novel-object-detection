@@ -1,0 +1,13 @@
+{
+    "detectron2_dir": "./datasets/DETECTRON2_DATASETS",
+    "visualize": false,
+    "data_split": "coco_ovd_val",
+    "sam_checkpoint": "./SAM_weights.pth",
+    "gdino_checkpoint": "./GDINO_weights.pth",
+    "cfg_file": "cfg/OpenVocab/R101-FPN-New-Baseline.py",
+    "rcnn_weight_dir": "MaskRCNN_COCO_OVD",
+    "use_saeg": false,
+    "use_vlrm_weights": true,
+    "stage2_threshold": 0.20,
+    "use_srm": true
+}

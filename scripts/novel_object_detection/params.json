@@ -1,0 +1,17 @@
+{
+    "detectron2_dir": "./datasets/DETECTRON2_DATASETS",
+    "visualize": false,
+    "lvis_data_split": "lvis_v1_val",
+    "class_len_per_prompt": 81,
+    "sam_checkpoint": "SAM_weights/sam3.pt",
+    "gdino_checkpoint": "GDINO_weights.pth",
+    "cfg_file": "cfg/MaskRCNN_R101-FPN-New-Baseline/R101-FPN-New-Baseline.py",
+    "rcnn_weight_dir": "model weights/MaskRCNN_COCO_OVD",
+    "use_caption_based_clip": true,
+    "use_saeg": true,
+    "use_srm": true,
+    "stage2_threshold": 0.10,
+    "fusion_alpha": 0.55,
+    "fusion_alpha_grid": [0.4, 0.5, 0.55, 0.6, 0.65],
+    "recompute_stage2_scores": false
+}

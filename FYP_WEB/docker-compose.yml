@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fyp_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - NOD_ENV=local
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - .:/workspace
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.cache/pip:/root/.cache/pip
+    working_dir: /workspace
+    command: python3 run_local.py

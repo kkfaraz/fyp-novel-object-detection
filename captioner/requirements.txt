@@ -1,0 +1,18 @@
+# It is recommended to install torch and torchvision manually based on your CUDA version.
+# e.g., pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu113
+
+# For the captioner
+transformers
+Pillow
+opencv-python
+ftfy
+regex
+tqdm
+git+https://github.com/openai/CLIP.git
+
+# For the text refiner
+openai
+langchain==0.0.101
+
+# General
+numpy
