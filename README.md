@@ -107,8 +107,8 @@ All the pre-trained model weights can be downloaded and placed inside the reposi
 | RNCDL       | V1        | -     | -      | 5.42     | 25.00    | 6.92   |
 | GDINO       | -         | ✔     | -      | 13.47    | 37.13    | 15.30  |
 | Base        | V2        | ✔     | SigLIP | 17.42    | 42.08    | 19.33  |
-| Ours        | V2        | ✔     | SigLIP | 15.42    | 46.08    | 18.26  |
-| Ours        | V2        | ✔     | SigLIP | 16.82    | 55.08    | 21.53  |
+| Ours        | V2        | ✔     | SigLIP | 16.82    | 48.65    | 20.53  |
+| Ours        | V2        | ✔     | SigLIP | 17.32    | 55.08    | 21.77  |
 
 **Table 1:** Comparison of object detection performance using mAP on the *lvis_val* dataset.
 
