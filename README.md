@@ -1,7 +1,7 @@
 # Training-Free Novel Object Detection using Mahalanobis Semantic Alignment and Hybrid Optimal Transport Fusion
 
 [Muhammad Faraz](https://github.com/kkfaraz), [Hassan Rasheed](https://github.com/HassanRasheed91), Muhammad Haseeb Butt, Mamoon Abbas  
-*Department of Data Science, GIFT University, Gujranwala, Pakistan*  
+*Department of Computer Science, GIFT University, Gujranwala, Pakistan*  
 *Supervisor: Sir Usman Ali*
 
 Official implementation of our paper "Training-Free Novel Object Detection using Mahalanobis Semantic Alignment and Hybrid Optimal Transport Fusion".
