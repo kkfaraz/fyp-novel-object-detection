@@ -17,8 +17,8 @@ print("=" * 60)
 
 # Check if we have a test image
 test_images = [
-    "/home/faraz/cooperative-foundational-models/custom_image.jpg",
-    "/home/faraz/cooperative-foundational-models/datasets/DETECTRON2_DATASETS/coco/val2017/000000000139.jpg",
+    os.path.join(proj_path, "custom_image.jpg"),
+    os.path.join(proj_path, "datasets/DETECTRON2_DATASETS/coco/val2017/000000000139.jpg"),
 ]
 
 test_image = None

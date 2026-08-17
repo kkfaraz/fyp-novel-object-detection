@@ -11,7 +11,7 @@ import pickle
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 try:
-    
+    from saeg_module import SAEGTextFeatureGenerator
     from vild_templates import get_vild_templates
     SAEG_AVAILABLE = True
 except ImportError:
@@ -87,10 +87,9 @@ def load_sam_model(device, sam_checkpoint):
             fallback_checkpoint = sam_checkpoint
             if "sam3" in sam_checkpoint or not os.path.exists(sam_checkpoint):
                 possible_paths = [
+                    os.path.join(proj_root, "SAM_weights.pth"),
+                    os.path.join(proj_root, "SAM_weights", "sam3.pt"),
                     "SAM_weights.pth",
-                    "../SAM_weights.pth",
-                    "../../SAM_weights.pth",
-                    "/home/faraz/FYP/NOD/FYP_CAP_2/SAM_weights.pth"
                 ]
                 for p in possible_paths:
                     if os.path.exists(p):

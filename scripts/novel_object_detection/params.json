@@ -3,7 +3,7 @@
     "visualize": false,
     "lvis_data_split": "lvis_v1_val",
     "class_len_per_prompt": 81,
-    "sam_checkpoint": "SAM_weights/sam3.pt",
+    "sam_checkpoint": "SAM_weights.pth",
     "gdino_checkpoint": "GDINO_weights.pth",
     "cfg_file": "cfg/MaskRCNN_R101-FPN-New-Baseline/R101-FPN-New-Baseline.py",
     "rcnn_weight_dir": "model weights/MaskRCNN_COCO_OVD",
@@ -13,5 +13,5 @@
     "stage2_threshold": 0.10,
     "fusion_alpha": 0.55,
     "fusion_alpha_grid": [0.4, 0.5, 0.55, 0.6, 0.65],
-    "recompute_stage2_scores": false
+    "recompute_stage2_scores": true
 }

@@ -18,7 +18,18 @@ _EXIF_ORIENT = 274  # exif 'Orientation' tag
 _M_RGB2YUV = [[0.299, 0.587, 0.114], [-0.14713, -0.28886, 0.436], [0.615, -0.51499, -0.10001]]
 
 class BBoxVisualizer(Visualizer):
-    colors = list(mcolors.BASE_COLORS.keys())
+    colors = [
+        "#FF3B30",  # Red
+        "#4CD964",  # Green
+        "#007AFF",  # Blue
+        "#FF9500",  # Orange
+        "#5856D6",  # Purple
+        "#5AC8FA",  # Cyan
+        "#FF2D55",  # Pink
+        "#FFCC00",  # Yellow
+        "#00C7BE",  # Teal
+        "#AF52DE",  # Indigo
+    ]
     
     def draw_instance_predictions(self, predictions):
         """
@@ -34,16 +45,25 @@ class BBoxVisualizer(Visualizer):
         scores = predictions.scores
         classes = predictions.pred_classes
         labels = _create_text_labels(classes, scores, self.metadata.get("thing_classes", None))
+        
+        # Calculate dynamic font size based on image dimensions
+        img_h, img_w = self.output.height, self.output.width
+        font_size = max(11, min(20, int(np.sqrt(img_h * img_w) // 55)))
+        
         for idx, (box, label) in enumerate(zip(boxes, labels)):
             color = self.colors[idx % len(self.colors)]
             box = box.cpu().detach().numpy()
             x0, y0, x1, y1 = box
-            self.draw_box((x0, y0, x1, y1), edge_color = color, linewidth = 4.0)
-            # Draw label at the top-left corner of the bounding box
-            self.draw_text(label, (x0, y0), horizontal_alignment="left", color = color, font_size = 12)
+            
+            # Draw fully opaque (alpha=1.0) bounding box with thickness 4.5
+            self.draw_box((x0, y0, x1, y1), edge_color = color, linewidth = 4.5, alpha = 1.0)
+            
+            # Draw label with custom draw_text
+            self.draw_text(label, (x0, y0), horizontal_alignment="left", color = color, font_size = font_size)
+            
         return self.output
 
-    def draw_box(self, box_coord, linewidth, alpha=0.5, edge_color="g", line_style="-"):
+    def draw_box(self, box_coord, linewidth, alpha=1.0, edge_color="g", line_style="-"):
         """
         Args:
             box_coord (tuple): a tuple containing x0, y0, x1, y1 coordinates, where x0 and y0
@@ -74,6 +94,60 @@ class BBoxVisualizer(Visualizer):
             )
         )
         return self.output
+
+    def draw_text(
+        self,
+        text,
+        position,
+        *,
+        font_size=None,
+        color="g",
+        horizontal_alignment="left",
+        rotation=0,
+    ):
+        """
+        Custom draw_text that draws a beautiful, solid background box matching the
+        bounding box border color, with white text, bold weight, and high readability.
+        """
+        if not font_size:
+            font_size = self._default_font_size
+
+        x, y = position
+        
+        # Position label above the box if possible, or inside if too close to the top edge
+        # We scale the margin with the visualizer scale
+        margin = 2.0 * self.output.scale
+        if y < (font_size * self.output.scale + 10.0):
+            # Close to top edge -> Draw inside top-left of box
+            vertical_alignment = "top"
+            y_pos = y + margin
+        else:
+            # Enough room -> Draw above the box
+            vertical_alignment = "bottom"
+            y_pos = y - margin
+
+        self.output.ax.text(
+            x,
+            y_pos,
+            text,
+            size=font_size * self.output.scale,
+            family="sans-serif",
+            weight="bold",
+            bbox={
+                "facecolor": color, 
+                "alpha": 1.0, 
+                "pad": 4.0, 
+                "edgecolor": "none",
+                "boxstyle": "square,pad=0.3"
+            },
+            verticalalignment=vertical_alignment,
+            horizontalalignment=horizontal_alignment,
+            color="white",
+            zorder=10,
+            rotation=rotation,
+        )
+        return self.output
+
 
 
 def build_captions_and_token_span(cat_list, force_lowercase):

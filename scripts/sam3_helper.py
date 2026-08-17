@@ -113,6 +113,14 @@ class SAM3CallableWrapper(nn.Module):
         # Get GPU memory before forward pass
         mem_before = torch.cuda.memory_allocated(self.device) if torch.cuda.is_available() else 0
         
+        # SAM3's ViTDet backbone stores weights in BFloat16.
+        # We must use torch.autocast to ensure input tensors are cast to
+        # match the weight dtype, avoiding "mat1 and mat2 must have the
+        # same dtype" errors. This mirrors what SAM3's own predictor does
+        # in sam3_base_predictor.py.
+        device_type = "cuda" if str(self.device).startswith("cuda") else "cpu"
+        autocast_dtype = torch.bfloat16 if device_type == "cuda" else torch.float32
+        
         if not is_same_image:
             self.current_image_tensor = image_tensor
             self.current_orig_hw = (orig_h, orig_w)
@@ -129,28 +137,29 @@ class SAM3CallableWrapper(nn.Module):
             # Normalize to mean=0.5, std=0.5
             img = (img - 0.5) / 0.5
             
-            # Forward image through SAM3 backbone (using self.model instead of self.predictor.model)
-            backbone_out = self.model.backbone.forward_image(img)
+            # Forward image through SAM3 backbone with autocast to match BFloat16 weights
+            with torch.autocast(device_type=device_type, dtype=autocast_dtype):
+                backbone_out = self.model.backbone.forward_image(img)
             
-            # Extract sam2 backbone output
-            sam2_backbone_out = backbone_out["sam2_backbone_out"]
-            
-            # Apply conv_s0 and conv_s1 projections to match the expected format
-            if hasattr(self.predictor.model.sam_mask_decoder, "conv_s0"):
-                sam2_backbone_out["backbone_fpn"][0] = (
-                    self.predictor.model.sam_mask_decoder.conv_s0(
-                        sam2_backbone_out["backbone_fpn"][0]
+                # Extract sam2 backbone output
+                sam2_backbone_out = backbone_out["sam2_backbone_out"]
+                
+                # Apply conv_s0 and conv_s1 projections to match the expected format
+                if hasattr(self.predictor.model.sam_mask_decoder, "conv_s0"):
+                    sam2_backbone_out["backbone_fpn"][0] = (
+                        self.predictor.model.sam_mask_decoder.conv_s0(
+                            sam2_backbone_out["backbone_fpn"][0]
+                        )
                     )
-                )
-            if hasattr(self.predictor.model.sam_mask_decoder, "conv_s1"):
-                sam2_backbone_out["backbone_fpn"][1] = (
-                    self.predictor.model.sam_mask_decoder.conv_s1(
-                        sam2_backbone_out["backbone_fpn"][1]
+                if hasattr(self.predictor.model.sam_mask_decoder, "conv_s1"):
+                    sam2_backbone_out["backbone_fpn"][1] = (
+                        self.predictor.model.sam_mask_decoder.conv_s1(
+                            sam2_backbone_out["backbone_fpn"][1]
+                        )
                     )
-                )
-            
-            _, vision_feats, _, _ = self.predictor.model._prepare_backbone_features(sam2_backbone_out)
-            vision_feats[-1] = vision_feats[-1] + self.predictor.model.no_mem_embed
+                
+                _, vision_feats, _, _ = self.predictor.model._prepare_backbone_features(sam2_backbone_out)
+                vision_feats[-1] = vision_feats[-1] + self.predictor.model.no_mem_embed
 
             feats = [
                 feat.permute(1, 2, 0).view(1, -1, *feat_size)
@@ -164,26 +173,27 @@ class SAM3CallableWrapper(nn.Module):
         scale = self.predictor.model.image_size / max(orig_h, orig_w)
         original_boxes = boxes_tensor / scale
         
-        # Prepare prompts
-        mask_input, unnorm_coords, labels, unnorm_box = self.predictor._prep_prompts(
-            point_coords=None,
-            point_labels=None,
-            box=original_boxes,
-            mask_logits=None,
-            normalize_coords=True,
-            img_idx=0
-        )
-        
-        # Run prediction
-        masks, iou_predictions, low_res_masks = self.predictor._predict(
-            point_coords=unnorm_coords,
-            point_labels=labels,
-            boxes=unnorm_box,
-            mask_input=mask_input,
-            multimask_output=multimask_output,
-            return_logits=False,
-            img_idx=0
-        )
+        # Prepare prompts and run prediction under autocast
+        with torch.autocast(device_type=device_type, dtype=autocast_dtype):
+            mask_input, unnorm_coords, labels, unnorm_box = self.predictor._prep_prompts(
+                point_coords=None,
+                point_labels=None,
+                box=original_boxes,
+                mask_logits=None,
+                normalize_coords=True,
+                img_idx=0
+            )
+            
+            # Run prediction
+            masks, iou_predictions, low_res_masks = self.predictor._predict(
+                point_coords=unnorm_coords,
+                point_labels=labels,
+                boxes=unnorm_box,
+                mask_input=mask_input,
+                multimask_output=multimask_output,
+                return_logits=False,
+                img_idx=0
+            )
         
         mem_after = torch.cuda.memory_allocated(self.device) if torch.cuda.is_available() else 0
         t_end = time.time()

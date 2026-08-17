@@ -13,10 +13,6 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 _proj_path = os.path.abspath(os.path.join(_script_dir, "../../"))
 sys.path.insert(0, _proj_path)
 sys.path.insert(0, os.path.join(_script_dir, '..'))
-# Also add the inner detectron2 package dir (local source checkout)
-_d2_inner = os.path.join(_proj_path, "detectron2", "detectron2")
-if os.path.isdir(_d2_inner):
-    sys.path.insert(0, os.path.join(_proj_path, "detectron2"))
 
 from gpu_utils import get_device, log_device_info, validate_all_models, log_gpu_memory, clear_gpu_memory
 
@@ -66,11 +62,11 @@ else:
 
 if _is_voc:
     try:
-        from detectron2.data.datasets.pascal_voc import register_pascal_voc
-        voc_data_root = os.path.join(_proj_path, "datasets/DETECTRON2_DATASETS/VOCdevkit")
-        if not os.path.isdir(voc_data_root):
-            voc_data_root = os.path.join(_proj_path, "datasets/VOCdevkit")
-        register_pascal_voc("voc_custom_2007_test", os.path.join(voc_data_root, "VOC2007"), "test", "2007")
+        from datasets.voc.voc_dataset import register_voc_dataset
+        voc_data_root = os.path.join(_proj_path, "datasets/VOCdevkit")
+        register_voc_dataset(dataset_name="voc_custom_2007_test", data_root=voc_data_root, year="2007", split="test")
+        register_voc_dataset(dataset_name="voc_custom_2012_test", data_root=voc_data_root, year="2012", split="test")
+        register_voc_dataset(dataset_name="voc_custom_0712_test", data_root=voc_data_root, year="07+12", split="test")
         print("[Dataset] Registered custom VOC datasets successfully")
     except Exception as e:
         print(f"[Dataset] Warning: Could not register VOC datasets: {e}")
@@ -171,30 +167,49 @@ def main():
     )
     orchestrator.save_metadata(vars(args))
     
+    # Determine which stages will actually run based on resume checkpoints
+    stage1_checkpoint_path = orchestrator.s1_path
+    stage2_checkpoint = os.path.join(full_output_dir, f"stage2_checkpoint_{current_exp_name}.pkl")
+    stage3_checkpoint = orchestrator.s3_path
+    
+    will_run_stage1 = not (not args.force_recompute and args.resume and os.path.exists(stage1_checkpoint_path))
+    will_run_stage2 = not (not args.force_recompute and args.resume and os.path.exists(stage2_checkpoint))
+    will_run_stage3 = True # We always execute stage 3 in this validation script
+
     print("Loading Models...")
     clear_gpu_memory()
-    # GDINO
-    gdino_config_path = os.path.join(proj_path, args.config.replace("GroundingDINO/", "cfg/GroundingDINO/").replace("config/", ""))
-    # Fallback if specific:
-    if "GroundingDINO_SwinT_OGC.py" in args.config:
-        gdino_config_path = os.path.join(proj_path, "cfg/GroundingDINO/GroundingDINO_SwinT_OGC.py")
-    elif not os.path.exists(gdino_config_path):
-        gdino_config_path = os.path.join(proj_path, "cfg/GroundingDINO/GDINO.py")
+    
+    gdino_model = None
+    maskrcnn_model = None
+    torchvision_maskrcnn = None
+    sam_model = None
+    cfg = None
+    
+    if will_run_stage1 or will_run_stage2:
+        # GDINO
+        gdino_config_path = os.path.join(proj_path, args.config.replace("GroundingDINO/", "cfg/GroundingDINO/").replace("config/", ""))
+        # Fallback if specific:
+        if "GroundingDINO_SwinT_OGC.py" in args.config:
+            gdino_config_path = os.path.join(proj_path, "cfg/GroundingDINO/GroundingDINO_SwinT_OGC.py")
+        elif not os.path.exists(gdino_config_path):
+            gdino_config_path = os.path.join(proj_path, "cfg/GroundingDINO/GDINO.py")
+            
+        gdino_model = load_model(gdino_config_path, params["gdino_checkpoint"])
+        gdino_model = gdino_model.to(device)
         
-    gdino_model = load_model(gdino_config_path, params["gdino_checkpoint"])
-    gdino_model = gdino_model.to(device)
-    
-    # Use LVIS config (clean) with COCO OVD weights for better novel detection
-    cfg_file_path = os.path.join(proj_path, params["cfg_file"])
-    rcnn_weight_path = os.path.join(proj_path, params["rcnn_weight_dir"])
-    print(f"[Model] Config: {cfg_file_path}")
-    print(f"[Model] Weights: {rcnn_weight_path}")
-    maskrcnn_model, cfg = load_fully_supervised_trained_model(cfg_file_path, rcnn_weight_path)
-    sam_model = load_sam_model(device, params["sam_checkpoint"])
-    
-    # Load TorchVision Mask-RCNN for RPN background proposals (critical for Stage 2)
-    torchvision_maskrcnn = load_torchvision_maskrcnn(device)
-    
+        # Use LVIS config (clean) with COCO OVD weights for better novel detection
+        cfg_file_path = os.path.join(proj_path, params["cfg_file"])
+        rcnn_weight_path = os.path.join(proj_path, params["rcnn_weight_dir"])
+        print(f"[Model] Config: {cfg_file_path}")
+        print(f"[Model] Weights: {rcnn_weight_path}")
+        maskrcnn_model, cfg = load_fully_supervised_trained_model(cfg_file_path, rcnn_weight_path)
+        
+        # Load TorchVision Mask-RCNN for RPN background proposals (critical for Stage 2)
+        torchvision_maskrcnn = load_torchvision_maskrcnn(device)
+        
+    if will_run_stage3:
+        sam_model = load_sam_model(device, params["sam_checkpoint"])
+        
     # Build GDINO text prompts and positive maps for LVIS categories
     from utils import get_text_prompt_list_for_g_dino, get_coco_to_lvis_mapping
     from segment_anything.utils.transforms import ResizeLongestSide
@@ -202,10 +217,17 @@ def main():
     class_len_per_prompt = params.get("class_len_per_prompt", 81)
     lvis_data_split = data_split
     
-    tokenizer = gdino_model.tokenizer
-    text_prompt_list, positive_map_list = get_text_prompt_list_for_g_dino(lvis_data_split, tokenizer, class_len_per_prompt)
-    coco_to_lvis = get_coco_to_lvis_mapping(cfg, lvis_data_split)
-    resize_transform = ResizeLongestSide(sam_model.image_encoder.img_size)
+    if gdino_model is not None:
+        tokenizer = gdino_model.tokenizer
+        text_prompt_list, positive_map_list = get_text_prompt_list_for_g_dino(lvis_data_split, tokenizer, class_len_per_prompt)
+    else:
+        tokenizer = None
+        text_prompt_list, positive_map_list = [], []
+        
+    coco_to_lvis = get_coco_to_lvis_mapping(None, lvis_data_split)
+    
+    sam_img_size = sam_model.image_encoder.img_size if sam_model is not None else 1024
+    resize_transform = ResizeLongestSide(sam_img_size)
     
     # GPU Validation: Verify all models are on correct device
     validate_all_models({
@@ -292,13 +314,30 @@ def main():
     log_gpu_memory("after_stage1_offload")
     
     # Run Stage 2 (with checkpoint resume)
-    stage2_checkpoint = os.path.join(full_output_dir, f"stage2_checkpoint_{current_exp_name}.pkl")
-    if not args.force_recompute and args.resume and os.path.exists(stage2_checkpoint):
-        print(f"[Checkpoint] Loading Stage 2 results from {stage2_checkpoint}")
-        with open(stage2_checkpoint, "rb") as f:
+    stage2_checkpoint_dir = os.path.join(full_output_dir, f"stage2_checkpoint_{current_exp_name}_batched")
+    s2_results = []
+    stage2_loaded = False
+    
+    if not args.force_recompute and args.resume and os.path.exists(stage2_checkpoint_dir):
+        print(f"[Checkpoint] Loading Stage 2 results in batches from {stage2_checkpoint_dir}")
+        chunk_files = sorted([f for f in os.listdir(stage2_checkpoint_dir) if f.startswith("chunk_")])
+        if len(chunk_files) > 0:
+            for chunk_file in chunk_files:
+                with open(os.path.join(stage2_checkpoint_dir, chunk_file), "rb") as f:
+                    s2_results.extend(pickle.load(f))
+            print(f"[Checkpoint] Loaded {len(s2_results)} Stage 2 results in {len(chunk_files)} batches. Skipping Stage 2.")
+            stage2_loaded = True
+
+    # Fallback to older single-file checkpoint if dir not found
+    stage2_checkpoint_old = os.path.join(full_output_dir, f"stage2_checkpoint_{current_exp_name}.pkl")
+    if not stage2_loaded and not args.force_recompute and args.resume and os.path.exists(stage2_checkpoint_old):
+        print(f"[Checkpoint] Loading Stage 2 results from legacy {stage2_checkpoint_old}")
+        with open(stage2_checkpoint_old, "rb") as f:
             s2_results = pickle.load(f)
         print(f"[Checkpoint] Loaded {len(s2_results)} Stage 2 results. Skipping Stage 2.")
-    else:
+        stage2_loaded = True
+        
+    if not stage2_loaded:
         s2_results = orchestrator.run_stage(
             stage_id=2,
             description="VLRM + CLIP",
@@ -306,10 +345,14 @@ def main():
             stage1_results=s1_results,
             param_dict=param_dict
         )
-        print(f"[Checkpoint] Saving Stage 2 results to {stage2_checkpoint}")
-        with open(stage2_checkpoint, "wb") as f:
-            pickle.dump(s2_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-        print(f"[Checkpoint] Saved {len(s2_results)} Stage 2 results.")
+        print(f"[Checkpoint] Saving Stage 2 results in batches to {stage2_checkpoint_dir}")
+        os.makedirs(stage2_checkpoint_dir, exist_ok=True)
+        batch_size = 1000
+        for i in range(0, len(s2_results), batch_size):
+            chunk = s2_results[i:i+batch_size]
+            with open(os.path.join(stage2_checkpoint_dir, f"chunk_{i:06d}.pkl"), "wb") as f:
+                pickle.dump(chunk, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"[Checkpoint] Saved {len(s2_results)} Stage 2 results in batches.")
     
     # Initialize Evaluator before Stage 3
     if "voc" in data_split.lower():
@@ -353,19 +396,33 @@ def main():
     # Move SAM model back to GPU for Stage 3
     if sam_model is not None:
         print("[VRAM] Moving SAM back to GPU for Stage 3")
-        sam_model = sam_model.to(device)
+        try:
+            sam_model = sam_model.to(device)
+        except Exception as e:
+            print(f"[VRAM] Warning: Failed to move SAM to {device}: {e}. Continuing with current placement.")
         param_dict["sam"] = sam_model
         
     # Run Stage 3
-    s3_results = orchestrator.run_stage(
-        stage_id=3,
-        description="Optimization (OT/SAM/SRM)",
-        worker_func=run_stage3_lvis,
-        stage1_results=s1_results,
-        stage2_results=s2_results,
-        param_dict=param_dict,
-        evaluator=evaluator
-    )
+    stage3_checkpoint = os.path.join(full_output_dir, f"stage3_checkpoint_{current_exp_name}.pkl")
+    if not args.force_recompute and args.resume and os.path.exists(stage3_checkpoint):
+        print(f"[Checkpoint] Loading Stage 3 results from {stage3_checkpoint}")
+        with open(stage3_checkpoint, "rb") as f:
+            s3_results = pickle.load(f)
+        print(f"[Checkpoint] Loaded Stage 3 results. Skipping Stage 3.")
+    else:
+        s3_results = orchestrator.run_stage(
+            stage_id=3,
+            description="Optimization (OT/SAM/SRM)",
+            worker_func=run_stage3_lvis,
+            stage1_results=s1_results,
+            stage2_results=s2_results,
+            param_dict=param_dict,
+            evaluator=evaluator
+        )
+        print(f"[Checkpoint] Saving Stage 3 results to {stage3_checkpoint}")
+        with open(stage3_checkpoint, "wb") as f:
+            pickle.dump(s3_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"[Checkpoint] Saved Stage 3 results.")
 
     print("\n" + "="*70)
     print("Evaluation Complete")

@@ -22,23 +22,7 @@ from detectron2.structures import Instances, Boxes, pairwise_iou
 from segment_anything.utils.transforms import ResizeLongestSide
 from torchvision.ops import batched_nms
 from pipeline_utils import PipelineTracker
-from gpu_utils import log_gpu_memory
-
-
-_PROJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-
-def _remap_path(path):
-    if path.startswith("/home/faraz/"):
-        path = path.replace("/home/faraz/FYP/NOD/FYP_CAP_2/", _PROJ_ROOT + "/")
-        path = path.replace("/home/faraz/cooperative-foundational-models/", _PROJ_ROOT + "/")
-    if not os.path.exists(path):
-        alt = path.replace("/VOCdevkit/", "/DETECTRON2_DATASETS/VOCdevkit/")
-        if alt != path and os.path.exists(alt):
-            return alt
-        alt = path.replace("/VOC2007/", "/VOCtrainval_06-Nov-2007/VOCdevkit/VOC2007/")
-        if alt != path and os.path.exists(alt):
-            return alt
-    return path
+from gpu_utils import log_gpu_memory, torch_minmax_scale
 
 
 def _filter_background_proposals(bg_boxes, bg_objectness, gdino_boxes, iou_threshold=0.5):
@@ -167,7 +151,7 @@ def run_stage1_lvis(dataloader, model=None, text_prompt=None, param_dict=None):
                 # Reconstruct output dict for downstream stages
                 # Map back to: gdino, known, background
                 loaded_dict = {
-                    "file_name": _remap_path(pkl["meta"]["filename"]),
+                    "file_name": pkl["meta"]["filename"],
                     "image_id": pkl["image_id"],
                     "height": pkl["meta"]["height"],
                     "width": pkl["meta"]["width"],
@@ -313,8 +297,8 @@ def _batch_load_stage2_from_cache(stage1_results, cache_dir, device):
             results.append(None)
             continue
 
-        image_path = _remap_path(s1_out["file_name"])
-        image_id = str(s1_out.get("image_id", os.path.basename(image_path).split('.')[0]))
+        image_id = str(s1_out.get("image_id", os.path.basename(s1_out["file_name"]).split('.')[0]))
+        image_path = s1_out["file_name"]
         cache_name = f"{image_id}.pkl"
 
         if cache_name in cache_files:
@@ -371,7 +355,7 @@ def _batch_load_stage2_from_cache(stage1_results, cache_dir, device):
                 "stage2_boxes": torch.empty(0, 4),
                 "stage2_scores": torch.empty(0),
                 "stage2_classes": torch.empty(0, dtype=torch.int64),
-                "file_name": _remap_path(s1_ref["file_name"]),
+                "file_name": s1_ref["file_name"],
                 "image_id": s1_ref.get("image_id", os.path.basename(s1_ref["file_name"]).split('.')[0]),
                 "height": s1_ref.get("height"),
                 "width": s1_ref.get("width")
@@ -442,7 +426,7 @@ def run_stage2_lvis(stage1_results, param_dict=None):
     image_ids = []
     for s1 in stage1_results:
         if s1 is not None:
-            image_ids.append(str(s1.get("image_id", os.path.basename(_remap_path(s1["file_name"])).split('.')[0])))
+            image_ids.append(str(s1.get("image_id", os.path.basename(s1["file_name"]).split('.')[0])))
 
     # Re-enable fast path: skip redundant CLIP re-encoding when enhanced cache exists
     # recompute_stage2_scores=True forces Mahalanobis re-scoring (needed when config changes
@@ -504,6 +488,13 @@ def run_stage2_lvis(stage1_results, param_dict=None):
     results = []
     stage2_threshold = param_dict.get("stage2_threshold", 0.10)
 
+    # Dynamic calibration for LVIS 1203-class softmax sparsity
+    lvis_split = param_dict.get("lvis_data_split", param_dict.get("data_split", "lvis_v1_val"))
+    is_voc_check = "voc" in lvis_split.lower()
+    if not is_voc_check and stage2_threshold == 0.10:
+        stage2_threshold = 0.02
+        print(f"[Stage 2] LVIS detected: dynamically adjusting stage2_threshold to {stage2_threshold} to compensate for 1203-class softmax sparsity.")
+
     if raw_features_list is not None:
         generated = sum(1 for r in raw_features_list if r is not None and not r.get("empty", True))
     else:
@@ -520,7 +511,7 @@ def run_stage2_lvis(stage1_results, param_dict=None):
             bg_boxes = s1_out["background"]["boxes"]
             bg_objectness = s1_out["background"]["objectness"]
             gdino_boxes = s1_out["gdino"]["boxes"]
-            image_path = _remap_path(s1_out["file_name"])
+            image_path = s1_out["file_name"]
             image_id = str(s1_out.get("image_id", os.path.basename(image_path).split('.')[0]))
 
             bg_boxes, bg_objectness = _filter_background_proposals(
@@ -550,7 +541,7 @@ def run_stage2_lvis(stage1_results, param_dict=None):
                     class_names=lvis_classes,
                     image_id=image_id,
                     image_path=image_path,
-                    max_regions=50,
+                    max_regions=150,
                     verbose=False,
                     return_raw_features=True
                 )
@@ -627,10 +618,10 @@ def run_stage2_lvis(stage1_results, param_dict=None):
         caption_scores_raw = stage2_module.clip.compute_mahalanobis(caption_features, mean_features, cov_inv)
         image_scores_raw = stage2_module.clip.compute_mahalanobis(image_features, mean_features, cov_inv)
 
-        # Per-class temperature scaling removed: distorts the Mahalanobis metric space.
-        # Apply softmax directly on raw Mahalanobis scores.
-        caption_sim = torch.softmax(caption_scores_raw, dim=-1)
-        image_sim = torch.softmax(image_scores_raw, dim=-1)
+        # sigmoid gives per-class independent scores (like baseline CLIP approach),
+        # avoiding the extreme sparsity of softmax over 1203 classes.
+        caption_sim = torch.sigmoid(caption_scores_raw)
+        image_sim = torch.sigmoid(image_scores_raw)
 
         # Handle edge case where image_features is empty but captions exist
         if caption_sim.shape[0] > 0 and image_sim.shape[0] == 0:
@@ -722,8 +713,9 @@ def run_stage3_lvis(stage1_results, stage2_results, param_dict, evaluator):
     if use_srm:
         print("[SRM] Enabled for LVIS Stage 3")
 
-    # Adaptive Proposal Fusion
-    use_apf = param_dict.get("use_apf", False)
+    # Adaptive Proposal Fusion (Disable for VOC to use standard NMS)
+    is_voc = "voc" in data_split.lower()
+    use_apf = param_dict.get("use_apf", False) if not is_voc else False
     if use_apf:
         apf = AdaptiveProposalFusion(
             source_weights=param_dict.get("apf_source_weights", {0: 0.55, 1: 0.50, 2: 0.40}),
@@ -744,18 +736,20 @@ def run_stage3_lvis(stage1_results, stage2_results, param_dict, evaluator):
     # rare-class correction without over-boosting.
     from lvis_calibration import LVISCalibrator
     lvis_split = param_dict.get("lvis_data_split", param_dict.get("data_split", "lvis_v1_val"))
+    rare_boost = param_dict.get("rare_boost", 1.15)
+    common_boost = param_dict.get("common_boost", 1.05)
+    frequent_boost = param_dict.get("frequent_boost", 1.0)
+    tau = param_dict.get("tau", 0.1)
+
     if "voc" in lvis_split.lower():
         calibrator = None
     else:
         calibrator = LVISCalibrator(
             data_split=lvis_split,
             num_classes=1203,
-            # Reduced boosts (Bug #5/#17): original rare×2.0, common×1.3 caused extreme
-            # FP inflation when combined with logit adjustment (tau=0.3 adds +log(prior^-1)
-            # which is already large for rare classes). Conservative values maintain correction.
-            rare_boost=1.3,
-            common_boost=1.1,
-            frequent_boost=1.0,
+            rare_boost=rare_boost,
+            common_boost=common_boost,
+            frequent_boost=frequent_boost,
             device=device
         )
 
@@ -769,16 +763,14 @@ def run_stage3_lvis(stage1_results, stage2_results, param_dict, evaluator):
     if evaluator is not None:
         evaluator.reset()
 
-    is_sam3 = (sam is not None and sam.__class__.__name__ == "SAM3CallableWrapper")
-    cache_subdir = "sam3_cache" if is_sam3 else "sam_cache"
-    sam_cache_dir = os.path.join(param_dict.get("out_dir", "outputs_lvis"), cache_subdir)
+    # Always use sam_cache — SAM3 has been replaced with standard SAM (ViT-L).
+    # Using a fixed name ensures no stale sam3_cache entries are accidentally loaded.
+    sam_cache_dir = os.path.join(param_dict.get("out_dir", "outputs_lvis"), "sam_cache")
 
     existing_cached = []
     if sam_cache_dir and os.path.exists(sam_cache_dir):
-        # We intentionally disable loading the final_*.pkl files here.
-        # Stage 3 is fast (~3 minutes), and skipping it causes the pipeline
-        # to silently ignore new Stage 2 boxes and new Calibration logic.
-        print(f"[Stage 3] Final cache loading disabled. Forcing full evaluation.")
+        existing_cached = [f for f in os.listdir(sam_cache_dir) if f.startswith("final_")]
+        print(f"[Stage 3] Found {len(existing_cached)} cached results. Resuming with robust validation.")
 
     final_results = []
     processed_count = 0
@@ -791,18 +783,81 @@ def run_stage3_lvis(stage1_results, stage2_results, param_dict, evaluator):
         if s1 is None:
             continue
 
-        fname = _remap_path(s1["file_name"])
+        fname = s1["file_name"]
         height = s1["height"]
         width = s1["width"]
         image_id = s1.get("image_id")
+
+        # Compute current config and Stage 2 hash to validate cache validity
+        def _to_bytes(t):
+            if isinstance(t, torch.Tensor):
+                return t.cpu().numpy().tobytes()
+            elif hasattr(t, "tobytes"):
+                return t.tobytes()
+            return str(t).encode('utf-8')
+        s2_data = _to_bytes(s2["stage2_boxes"]) + _to_bytes(s2["stage2_scores"]) + _to_bytes(s2["stage2_classes"])
+        s2_hash = hashlib.md5(s2_data).hexdigest()[:12]
+
+        current_config = {
+            "s2_hash": s2_hash,
+            "use_srm": use_srm,
+            "max_before_sam": max_before_sam,
+            "max_dets_per_image": max_dets_per_image,
+            "is_voc": is_voc,
+            "sam_checkpoint": param_dict.get("sam_checkpoint"),
+            "rare_boost": rare_boost,
+            "common_boost": common_boost,
+            "frequent_boost": frequent_boost,
+            "tau": tau,
+            "remove_minmax_bug": True,
+            "skip_known_sam_srm": True,
+            "ot_penalty_factor": 0.7,
+            "pre_sam_nms_iou": 0.65,
+        }
 
         cached_result_path = None
         if sam_cache_dir:
             safe_id = str(image_id).replace('/', '_').replace('\\', '_') if image_id else os.path.basename(fname).split('.')[0]
             cached_result_path = os.path.join(sam_cache_dir, f"final_{safe_id}.pkl")
 
-        # The final_result_path loading logic was removed to ensure OT + SAM + SRM
-        # and LVIS Calibration always execute sequentially on the fresh Stage 2 outputs.
+        if cached_result_path and os.path.exists(cached_result_path):
+            try:
+                cached = torch.load(cached_result_path, map_location='cpu')
+                cached_config = cached.get("config", {})
+                
+                configs_match = True
+                for k, v in current_config.items():
+                    if cached_config.get(k) != v:
+                        configs_match = False
+                        break
+                
+                if configs_match:
+                    inst = Instances((height, width))
+                    inst.pred_boxes = Boxes(cached['boxes'])
+                    inst.scores = cached['scores']
+                    inst.pred_classes = cached['classes']
+                    
+                    stage3_item = {
+                        "file_name": fname,
+                        "image_id": image_id,
+                        "height": height,
+                        "width": width,
+                        "instances": inst
+                    }
+                    final_results.append(stage3_item)
+                    
+                    if evaluator is not None:
+                        inputs_mock = [{
+                            "file_name": fname,
+                            "height": height,
+                            "width": width,
+                            "image_id": image_id
+                        }]
+                        evaluator.process(inputs_mock, [{"instances": inst}])
+                    skipped_count += 1
+                    continue
+            except Exception as e:
+                print(f"[Resume] Failed to load cached result for {image_id}: {e}")
 
         g_boxes = s1["gdino"]["boxes"].to(device)
         g_scores = s1["gdino"]["scores"].to(device)
@@ -822,69 +877,53 @@ def run_stage3_lvis(stage1_results, stage2_results, param_dict, evaluator):
         # that were already kept by Stage 2. Removed to prevent double-filtering.
         # (If you need to test different thresholds, clear Stage 2 cache and rerun.)
 
-        if use_apf and apf is not None:
-            t_start_apf = tracker.log_module_start("APF-Fusion") if tracker else None
-
-            # Build multi-source proposal dict
-            proposals_by_source = {
-                0: {"boxes": known_boxes,  "scores": known_scores,  "classes": known_labels},
-                1: {"boxes": g_boxes,      "scores": g_scores,      "classes": g_labels},
-                2: {"boxes": s2_boxes,     "scores": s2_scores,     "classes": s2_classes},
-            }
-
-            apf_out = apf.fuse(proposals_by_source, use_soft_nms=False)
-            merged_boxes = apf_out["boxes"]
-            merged_scores = apf_out["scores"]
-            merged_classes = apf_out["classes"]
-            source_contrib = apf_out["source_contributions"]
-
-            if tracker:
-                tracker.log_module_end("APF-Fusion", t_start_apf, metadata={
-                    "pair_count": len(merged_boxes),
-                    "source_contrib_mean": source_contrib.mean(dim=0).tolist() if len(source_contrib) > 0 else [],
-                })
-
-            # Source 1 is GDINO, which was SAM-refined in Stage 1
-            already_refined = source_contrib[:, 1] > 0.5 if len(source_contrib) > 0 else torch.zeros(len(merged_boxes), dtype=torch.bool, device=device)
-
-            final_boxes, final_scores, final_classes = _apply_sam_srm_nms(
-                merged_boxes, merged_scores, merged_classes,
-                fname, sam, srm, resize_transform, verbose, device, tracker=tracker,
-                debug_mode=debug_mode, sam_cache_dir=sam_cache_dir, calibrator=calibrator,
-                apf=apf, already_refined=already_refined,
-                max_before_sam=max_before_sam, max_dets_per_image=max_dets_per_image,
-            )
-        else:
-            # Fallback: original OT Fusion
-            t_start_ot = tracker.log_module_start("Hungarian-OT-Fusion") if tracker else None
+        t_start_ot = tracker.log_module_start("Hungarian-OT-Fusion") if tracker else None
+        if is_voc:
+            # VOC mode: All classes are in the same class space.
+            # But known detections from Mask-RCNN are high quality. Keeping them separate
+            # during OT matching avoids the unmatched penalty suppressing them.
+            # Match Stage 2 detections against GDINO.
             merged_boxes, merged_scores, merged_classes = ot_fusion(
                 s2_boxes, s2_scores, s2_classes,
                 known_boxes, known_scores, known_labels,
                 g_boxes, g_scores, g_labels,
                 iou_weight=0.6, semantic_weight=0.4, sinkhorn_reg=0.1, sinkhorn_iters=50,
+                boost_factor=1.5, penalty_factor=0.7,
                 param_dict={'verbose': verbose, 'img_h': height, 'img_w': width}
             )
-            if tracker:
-                tracker.log_module_end("Hungarian-OT-Fusion", t_start_ot, metadata={
-                    "pair_count": len(merged_boxes),
-                    "cost_summary": {"total_cost": 0}
-                })
-
-            # The already_refined mask tracks which boxes in `merged_boxes` were SAM-refined
-            # in Stage 1 (GDINO boxes). After OT fusion, the merged tensor layout is:
-            # [known_boxes, fused/boosted_gdino_boxes, penalized_bg_boxes]
-            # This is hard to reconstruct precisely. Use a safe conservative default:
-            # mark NO boxes as already refined, so SRM is applied to all.
-            # This slightly over-applies SAM but never SKIPS it for GDINO boxes.
-            already_refined = torch.zeros(len(merged_boxes), dtype=torch.bool, device=device)
-
-            final_boxes, final_scores, final_classes = _apply_sam_srm_nms(
-                merged_boxes, merged_scores, merged_classes,
-                fname, sam, srm, resize_transform, verbose, device, tracker=tracker,
-                debug_mode=debug_mode, sam_cache_dir=sam_cache_dir, calibrator=calibrator,
-                already_refined=already_refined,
-                max_before_sam=max_before_sam, max_dets_per_image=max_dets_per_image,
+        else:
+            merged_boxes, merged_scores, merged_classes = ot_fusion(
+                s2_boxes, s2_scores, s2_classes,
+                known_boxes, known_scores, known_labels,
+                g_boxes, g_scores, g_labels,
+                iou_weight=0.6, semantic_weight=0.4, sinkhorn_reg=0.1, sinkhorn_iters=50,
+                boost_factor=1.5, penalty_factor=0.7,
+                param_dict={'verbose': verbose, 'img_h': height, 'img_w': width}
             )
+            
+        if tracker:
+            tracker.log_module_end("Hungarian-OT-Fusion", t_start_ot, metadata={
+                "pair_count": len(merged_boxes),
+                "cost_summary": {"total_cost": 0}
+            })
+
+        # Mask-RCNN detections are already high quality and refined.
+        # Construct an already_refined boolean mask to skip SAM and SRM for them,
+        # preventing score degradation and preserving the known classes' AP at 55+.
+        num_known = len(known_boxes)
+        already_refined = torch.zeros(len(merged_boxes), dtype=torch.bool, device=device)
+        if num_known > 0:
+            already_refined[:num_known] = True
+
+        # Apply SAM, SRM, NMS to all boxes
+        final_boxes, final_scores, final_classes = _apply_sam_srm_nms(
+            merged_boxes, merged_scores, merged_classes,
+            fname, sam, srm, resize_transform, verbose, device, tracker=tracker,
+            debug_mode=debug_mode, sam_cache_dir=sam_cache_dir, calibrator=calibrator,
+            already_refined=already_refined,
+            max_before_sam=max_before_sam, max_dets_per_image=max_dets_per_image,
+            is_voc=is_voc, tau=tau
+        )
 
         if tracker and debug_mode and len(final_boxes) > 0:
             tracker.save_debug_image("Final-Detection", fname, boxes=final_boxes[:10])
@@ -909,10 +948,11 @@ def run_stage3_lvis(stage1_results, stage2_results, param_dict, evaluator):
             try:
                 os.makedirs(sam_cache_dir, exist_ok=True)
                 torch.save({
-                    'boxes': final_boxes,
-                    'scores': final_scores,
-                    'classes': final_classes,
-                    'image_id': image_id
+                    'boxes': final_boxes.cpu(),
+                    'scores': final_scores.cpu(),
+                    'classes': final_classes.cpu(),
+                    'image_id': image_id,
+                    'config': current_config
                 }, temp_path)
                 os.replace(temp_path, cached_result_path)
             except Exception as e:
@@ -949,7 +989,9 @@ def _get_sam_cache_path(image_path, image_id, cache_dir):
     safe_id = str(image_id).replace('/', '_').replace('\\', '_')
     return os.path.join(cache_dir, f"sam_{safe_id}.pkl")
 
-def _apply_sam_srm_nms(boxes, scores, classes, image_path, sam, srm, resize_transform, verbose, device, tracker=None, debug_mode=False, sam_cache_dir=None, calibrator=None, apf=None, already_refined=None, max_before_sam=500, max_dets_per_image=500):
+
+
+def _apply_sam_srm_nms(boxes, scores, classes, image_path, sam, srm, resize_transform, verbose, device, tracker=None, debug_mode=False, sam_cache_dir=None, calibrator=None, apf=None, already_refined=None, max_before_sam=500, max_dets_per_image=500, is_voc=False, tau=0.1):
     if len(boxes) == 0:
         return boxes, scores, classes
 
@@ -963,8 +1005,7 @@ def _apply_sam_srm_nms(boxes, scores, classes, image_path, sam, srm, resize_tran
     else:
         already_refined = already_refined.to(device)
 
-    # 1. Pre-SAM deduplication — iou=0.65 for LVIS (0.5 too aggressive for overlapping instances
-    # like person+hat, which are common in LVIS fine-grained categories)
+    # 1. Pre-SAM deduplication — iou=0.65 for LVIS.
     if len(boxes) > 0:
         keep = batched_nms(boxes, scores, classes, iou_threshold=0.65)
         boxes = boxes[keep]
@@ -1004,7 +1045,7 @@ def _apply_sam_srm_nms(boxes, scores, classes, image_path, sam, srm, resize_tran
             if len(cached_sam_refined) == len(scores) and cached_hash == boxes_hash:
                 sam_scores = cached_sam_scores
                 sam_refined = cached_sam_refined
-                boxes = sam_refined
+                # Do NOT overwrite boxes yet, we will select better box later.
                 print(f"[SAM Cache] Loaded: {os.path.basename(cache_path)}")
             else:
                 reason = "count mismatch" if len(cached_sam_refined) != len(scores) else "content changed"
@@ -1085,7 +1126,7 @@ def _apply_sam_srm_nms(boxes, scores, classes, image_path, sam, srm, resize_tran
                     sam_refined[to_refine_mask] = torch.cat(sam_refined_list, dim=0)
                     sam_scores[to_refine_mask] = torch.cat(sam_scores_list, dim=0).squeeze(1)
 
-            boxes = sam_refined
+            # Do NOT overwrite boxes yet, we will select better box later.
 
             if cache_available and cache_path and len(sam_scores) > 0:
                 temp_path = cache_path + ".tmp"
@@ -1112,6 +1153,23 @@ def _apply_sam_srm_nms(boxes, scores, classes, image_path, sam, srm, resize_tran
             if verbose:
                 print(f"[SAM] Warning: {e}")
             sam_scores = None
+
+    # Select better box and score from SAM
+    if sam is not None and sam_refined is not None and sam_scores is not None and len(sam_refined) == len(boxes):
+        # Always use the SAM-refined boxes and their predicted IoU scores
+        # for SRM scaling, exactly like the COCO pipeline.
+        if already_refined is not None:
+            to_refine_mask = ~already_refined
+        else:
+            to_refine_mask = torch.ones(len(boxes), dtype=torch.bool, device=device)
+            
+        final_boxes = boxes.clone()
+        final_boxes[to_refine_mask] = sam_refined[to_refine_mask]
+        
+        boxes = final_boxes
+        # Keep sam_scores as predicted by SAM
+    elif sam is not None and sam_refined is not None:
+        boxes = sam_refined
 
     if srm is not None and sam_scores is not None and len(sam_scores) == len(scores):
         try:
@@ -1141,17 +1199,34 @@ def _apply_sam_srm_nms(boxes, scores, classes, image_path, sam, srm, resize_tran
                 print(f"[SRM] Warning: {e}")
 
     # Step 5: Frequency-Aware Calibration + Logit Adjustment
-    # Multiplicative boosts (rare×1.3, common×1.1) compensate for the natural
-    # suppression of rare classes in the 1203-class softmax output.
-    # Logit adjustment (additive, tau=0.3) provides theoretically grounded
-    # rare-class correction. tau=0.3 is conservative to avoid over-boosting.
+    # Apply calibration ONLY to novel proposals (not already_refined known boxes).
+    # Known boxes come from Mask-RCNN with calibrated classification scores —
+    # applying LVIS rare/common/frequent boosts to them distorts their ranking.
     if calibrator is not None and len(scores) > 0:
-        scores = calibrator.calibrate(scores, classes, apply_logit_adjustment=True, tau=0.3)
+        if already_refined is not None and already_refined.any() and (~already_refined).any():
+            novel_calib_mask = ~already_refined
+            novel_scores_calib = calibrator.calibrate(
+                scores[novel_calib_mask], classes[novel_calib_mask],
+                apply_logit_adjustment=True, tau=tau
+            )
+            scores = scores.clone()
+            scores[novel_calib_mask] = novel_scores_calib
+        elif already_refined is None or not already_refined.any():
+            # No known boxes — calibrate everything
+            scores = calibrator.calibrate(scores, classes, apply_logit_adjustment=True, tau=tau)
+        # else: all known boxes — skip calibration entirely
 
     # Ensure all tensors are on the same device
     boxes = boxes.float().to(device)
     scores = scores.float().to(device)
     classes = classes.long().to(device)
+
+    if is_voc and len(classes) > 0:
+        # Keep only VOC classes [0, 19]
+        voc_mask = (classes >= 0) & (classes < 20)
+        boxes = boxes[voc_mask]
+        scores = scores[voc_mask]
+        classes = classes[voc_mask]
 
     # Post-SAM deduplication (APF WBF or standard NMS)
     if apf is not None:

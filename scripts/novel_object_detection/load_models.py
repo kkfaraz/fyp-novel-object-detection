@@ -16,7 +16,7 @@ from segment_anything import sam_model_registry
 from utils import article, processed_name
 
 # SAEG imports for synonym-averaged text features
-
+from saeg_module import SAEGTextFeatureGenerator
 from vild_templates import get_vild_templates
 
 def load_fully_supervised_trained_model(cfg_file, weight_dir, device="cuda"):
@@ -109,7 +109,12 @@ def load_clip_model(data_split, device):
     lvis_metadata = MetadataCatalog.get(data_split)
     lvis_classes = lvis_metadata.get("thing_classes")
 
-    with open('lvis_original_class_to_synonyms.pkl', 'rb') as f:
+    proj_path = Path(__file__).resolve().parents[2]
+    synonym_file = proj_path / 'lvis_original_class_to_synonyms.pkl'
+    if not synonym_file.exists():
+        synonym_file = Path('lvis_original_class_to_synonyms.pkl')
+
+    with open(synonym_file, 'rb') as f:
         class_names_to_synonyms = pickle.load(f)
 
     from vild_templates import get_vild_templates
@@ -175,7 +180,11 @@ def load_clip_model_saeg(data_split, device):
     lvis_classes = lvis_metadata.get("thing_classes")
     
     # Load synonym dictionary
-    with open('lvis_original_class_to_synonyms.pkl', 'rb') as f:
+    synonym_file = proj_path / 'lvis_original_class_to_synonyms.pkl'
+    if not synonym_file.exists():
+        synonym_file = Path('lvis_original_class_to_synonyms.pkl')
+
+    with open(synonym_file, 'rb') as f:
         class_names_to_synonyms = pickle.load(f)
     
     # Load ViLD templates (64 templates from the paper)
@@ -241,91 +250,64 @@ def load_torchvision_maskrcnn(device):
 
 
 def load_sam_model(device, sam_checkpoint):
-    # Clear GPU memory before loading SAM
+    """
+    Load SAM3 for Stage 3 box refinement.
+    Uses SAM3CallableWrapper to bypass Triton kernel issues and ensure standard output formatting.
+    """
     import gc
+    import os
+    import sys
+    
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-    
-    # Try loading SAM3 first
+
+    # Add sam3 and scripts to path
+    proj_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
+    sam3_path = os.path.join(proj_root, "sam3")
+    if sam3_path not in sys.path:
+        sys.path.insert(0, sam3_path)
+    scripts_path = os.path.join(proj_root, "scripts")
+    if scripts_path not in sys.path:
+        sys.path.insert(0, scripts_path)
+
     try:
-        import sys
-        import os
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Search upwards for the workspace root containing 'sam3' and 'scripts'
-        proj_root = current_dir
-        for _ in range(5):
-            if os.path.exists(os.path.join(proj_root, "sam3")) and os.path.exists(os.path.join(proj_root, "scripts")):
-                break
-            proj_root = os.path.dirname(proj_root)
-        
-        # Add paths for sam3 namespace package
-        sys.path.insert(0, os.path.join(proj_root, "sam3"))
-        sys.path.insert(0, os.path.join(proj_root, "scripts"))
-        
         from sam3.model_builder import build_sam3_image_model
-        from sam3_helper import SAM3CallableWrapper, download_sam3_checkpoint
-        
-        print("[SAM3 Loader] Attempting to load SAM3...")
-        checkpoint_dir = os.path.join(proj_root, "SAM_weights")
-        target_path = os.path.join(checkpoint_dir, "sam3.pt")
-        
-        # Auto-download if missing
-        if not os.path.exists(target_path):
-            print(f"[SAM3 Loader] Checkpoint not found at {target_path}. Downloading...")
-            download_sam3_checkpoint(checkpoint_dir)
-            
-        print(f"[SAM3 Loader] Loading SAM3 model on {device} using checkpoint {target_path}...")
+        from sam3_helper import SAM3CallableWrapper
+    except ImportError as e:
+        raise ImportError(f"[SAM3 Loader] Failed to import SAM3 modules: {e}")
+
+    # Fallback checkpoint path if sam_checkpoint is missing
+    if sam_checkpoint is None or not os.path.exists(sam_checkpoint):
+        candidate1 = os.path.join(proj_root, "SAM_weights", "sam3.pt")
+        candidate2 = os.path.join(proj_root, "SAM_weights.pth")
+        if os.path.exists(candidate1):
+            sam_checkpoint = candidate1
+        elif os.path.exists(candidate2):
+            sam_checkpoint = candidate2
+        else:
+            raise FileNotFoundError(
+                f"[SAM3 Loader] SAM checkpoint not found at '{sam_checkpoint}'. "
+                f"Please ensure weights exist at '{candidate1}' or '{candidate2}'."
+            )
+
+    print(f"[SAM3 Loader] Loading SAM3 from {sam_checkpoint}...")
+
+    try:
         sam3_model = build_sam3_image_model(
             device=device,
             load_from_HF=False,
-            checkpoint_path=target_path,
+            checkpoint_path=sam_checkpoint,
             enable_inst_interactivity=True
         )
-        print("[SAM3 Loader] Wrapping SAM3 model in callable wrapper...")
-        sam = SAM3CallableWrapper(sam3_model, device)
-        print("[SAM3 Loader] ✓ SAM3 successfully loaded and wrapped!")
-        return sam
+        sam3_model.eval()
+        sam_wrapped = SAM3CallableWrapper(sam3_model, device)
+        print(f"[SAM3 Loader] ✓ Loaded SAM3 Callable Wrapper on {device}")
+        return sam_wrapped
     except Exception as e:
-        import traceback
         print(f"[SAM3 Loader] ⚠ Failed to load SAM3: {e}")
-        print("[SAM3 Loader] Traceback details:")
-        traceback.print_exc()
-        print("[SAM Loader] Falling back to standard SAM (v1)...")
-        try:
-            from segment_anything import sam_model_registry
-            fallback_checkpoint = sam_checkpoint
-            if "sam3" in sam_checkpoint or not os.path.exists(sam_checkpoint):
-                possible_paths = [
-                    "SAM_weights.pth",
-                    "../SAM_weights.pth",
-                    "../../SAM_weights.pth",
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../SAM_weights.pth")
-                ]
-                for p in possible_paths:
-                    if os.path.exists(p):
-                        fallback_checkpoint = p
-                        break
-            
-            print(f"[SAM Loader] Loading standard SAM from {fallback_checkpoint}...")
-            sam = None
-            for model_type in ["vit_l", "vit_h"]:
-                try:
-                    sam = sam_model_registry[model_type](checkpoint=fallback_checkpoint)
-                    print(f"[SAM Loader] ✓ Loaded standard SAM using model type: {model_type}")
-                    break
-                except Exception as load_err:
-                    print(f"[SAM Loader] Tried loading as {model_type} but failed: {load_err}")
-            if sam is None:
-                raise RuntimeError("Failed to load SAM with vit_l and vit_h configurations.")
-            sam.to(device)
-            sam.eval()
-            return sam
-        except Exception as fallback_err:
-            print(f"[SAM Loader] ⚠ Fallback to standard SAM also failed: {fallback_err}")
-            raise RuntimeError(f"Failed to load both SAM3 and standard SAM: {fallback_err}") from fallback_err
+        raise RuntimeError(f"Could not load SAM3: {e}")
 
 
 def load_clip_model_caption_based(data_split, device, text_refiner=None):

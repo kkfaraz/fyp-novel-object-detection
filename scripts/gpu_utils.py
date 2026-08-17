@@ -48,14 +48,16 @@ def log_device_info():
         print(f"  Current Device:     {torch.cuda.current_device()}")
         print(f"  Device Name:        {torch.cuda.get_device_name(0)}")
         
-        total_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
-        free_mem, _ = torch.cuda.mem_get_info(0)
-        free_mem_gb = free_mem / 1e9
-        
-        print(f"  Total GPU Memory:   {total_mem:.2f} GB")
-        print(f"  Free GPU Memory:    {free_mem_gb:.2f} GB")
-        print(f"  Allocated Memory:   {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
-        print(f"  Reserved Memory:    {torch.cuda.memory_reserved(0) / 1e9:.2f} GB")
+        try:
+            total_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
+            free_mem, _ = torch.cuda.mem_get_info(0)
+            free_mem_gb = free_mem / 1e9
+            print(f"  Total GPU Memory:   {total_mem:.2f} GB")
+            print(f"  Free GPU Memory:    {free_mem_gb:.2f} GB")
+            print(f"  Allocated Memory:   {torch.cuda.memory_allocated(0) / 1e9:.2f} GB")
+            print(f"  Reserved Memory:    {torch.cuda.memory_reserved(0) / 1e9:.2f} GB")
+        except Exception as e:
+            print(f"  [GPU INFO] Could not retrieve GPU memory details: {e}")
     else:
         print("  WARNING: No CUDA GPU detected! Pipeline will run on CPU.")
         print("  This will result in significantly slower execution.")

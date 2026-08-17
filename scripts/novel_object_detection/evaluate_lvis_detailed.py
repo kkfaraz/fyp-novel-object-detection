@@ -6,12 +6,12 @@ import argparse
 from detectron2.data import DatasetCatalog, MetadataCatalog
 
 # Add current dir to path to find imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Register datasets
 import datasets.register_lvis_val_subset 
-import datasets.register_coco_ovd
+import datasets.register_coco_ovd_dataset
 
 from evaluation import LVISEvaluatorCustom
 from load_models import load_clip_model

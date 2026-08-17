@@ -169,7 +169,7 @@ def hybrid_match_and_fuse(
     sinkhorn_reg: float = 0.1, # Legacy param, unused
     sinkhorn_iters: int = 50, # Legacy param, unused
     boost_factor: float = 1.5,
-    penalty_factor: float = 1.0,
+    penalty_factor: float = 0.7,
     param_dict: Optional[Dict[str, Any]] = None
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
@@ -361,11 +361,12 @@ def hybrid_match_and_fuse(
         return multipliers
 
     preds_multipliers = calculate_multiplier(ot_preds_match, h_preds_match)
-    gdino_multipliers = calculate_multiplier(ot_gdino_match, h_gdino_match)
 
     # Apply multiplication transformation and clamp to [0.0, 1.0]
     preds_scores_adj = (preds_scores * preds_multipliers).clamp(0.0, 1.0)
-    gdino_scores_adj = (gdino_scores * gdino_multipliers).clamp(0.0, 1.0)
+    # GDINO is the high-quality teacher — never penalize when VLRM bg proposals
+    # didn't match it. Unmatched GDINO detections keep their original score.
+    gdino_scores_adj = gdino_scores
     
     if verbose:
         both_p = ((ot_preds_match > 0) & (h_preds_match > 0)).sum()

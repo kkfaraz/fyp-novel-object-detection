@@ -35,7 +35,7 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 # Internal configuration (not exposed via CLI)
 # LPC is now controlled per-instance via Stage2_VLRM_CLIP_Fusion(use_lpc=...)
 
-from vild_templates import get_vild_templates
+from vild_templates import get_vild_templates, format_class_prompts
 
 
 # ==============================================================================
@@ -273,7 +273,7 @@ class CLIPEncoder:
             target_dtype = next(self.model.parameters()).dtype
 
             for c in class_names:
-                prompts = [t.format(c) for t in templates]
+                prompts = format_class_prompts(c, templates=templates)
                 class_embeddings_list = []
                 for i in range(0, len(prompts), batch_size):
                     batch_prompts = prompts[i:i+batch_size]
@@ -541,7 +541,6 @@ class Stage2_VLRM_CLIP_Fusion:
 
     def _get_class_stats_saeg(self, class_names: List[str]) -> Tuple[torch.Tensor, torch.Tensor]:
         from saeg_module import SAEGTextFeatureGenerator, load_class_to_synonyms
-        from vild_templates import get_vild_templates
 
         is_voc = len(class_names) == 20 or any(c in ["aeroplane", "tvmonitor", "pottedplant"] for c in class_names)
         if is_voc:
@@ -567,8 +566,8 @@ class Stage2_VLRM_CLIP_Fusion:
         )
         saeg_features = saeg.generate_text_features(class_names)
 
-        # Compute covariance from template embeddings for Mahalanobis distance
-        _, cov_inv = self.clip.encode_class_names_with_templates(class_names)
+        # Compute covariance from SAEG's per-template embeddings (includes synonyms)
+        cov_inv = saeg.compute_covariance(saeg_features, lambda_reg=0.1)
 
         print(f"[SAEG] Features: {saeg_features.shape}, Cov: {cov_inv.shape}")
         return saeg_features, cov_inv
@@ -720,7 +719,7 @@ class Stage2_VLRM_CLIP_Fusion:
             batch_caps = self.vlrm.generate_captions_batch(batch_crops)
             captions.extend(batch_caps)
             
-        self.vlrm.finish(force_offload=False)
+        self.vlrm.finish(force_offload=True)
         return captions
 
     def _apply_lpc_logic(self, semantic_scores, image_features, mean_features, image_id, tracker):
@@ -981,6 +980,7 @@ class Stage2_VLRM_CLIP_Fusion:
             caption_features = caption_features[valid_caption_mask]
             image_features = image_features[valid_caption_mask]
             valid_indices = [valid_indices[i] for i in valid_caption_indices]
+            captions = [captions[i] for i in valid_caption_indices]
             print(f"  [VLRM] Filtered {(~valid_caption_mask).sum().item()} invalid captions. {len(valid_indices)} remain.")
 
         if return_raw_features:
@@ -992,11 +992,12 @@ class Stage2_VLRM_CLIP_Fusion:
         caption_scores_raw = self.clip.compute_mahalanobis(caption_features, mean_features, cov_inv)
         image_scores_raw = self.clip.compute_mahalanobis(image_features, mean_features, cov_inv)
 
-        # Per-class temperature scaling removed (Bug #4): it distorts the Mahalanobis
-        # metric space and inverts the calibration intent for rare classes.
-        # Apply softmax directly on the Mahalanobis scores.
-        caption_sim = torch.softmax(caption_scores_raw, dim=-1)
-        image_sim = torch.softmax(image_scores_raw, dim=-1)
+        # Use softmax with temperature scaling (tau=0.07) to map Mahalanobis distances
+        # to valid probabilities. Sigmoid without shifting causes float underflow (0.0000)
+        # because negative squared distances can be very large (e.g. -500).
+        tau = 0.07
+        caption_sim = torch.softmax(caption_scores_raw / tau, dim=-1)
+        image_sim = torch.softmax(image_scores_raw / tau, dim=-1)
 
         semantic_scores = self.fusion_alpha * caption_sim + (1 - self.fusion_alpha) * image_sim
         if tracker: tracker.log_module_end("Stage-2-Mahalanobis", t_start_mahalanobis)
@@ -1011,6 +1012,7 @@ class Stage2_VLRM_CLIP_Fusion:
             import gc
             gc.collect()
 
+        self.last_captions = captions
         return semantic_scores, valid_indices
  
 if __name__ == "__main__":

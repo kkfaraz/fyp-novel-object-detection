@@ -168,6 +168,8 @@ class LVISEvaluatorCustom(LVISEvaluator):
         Same as `LVISEvaluator`, code had to be re-copied to fix a reference to a new `_evaluate_predictions_on_lvis()`
         that is re-defined below.
         """
+        if not hasattr(self, "_results"):
+            self._results = OrderedDict()
 
         self._logger.info("[Evaluator new] Preparing results in the LVIS format ...")
         lvis_results = list(itertools.chain(*[x["instances"] for x in predictions]))

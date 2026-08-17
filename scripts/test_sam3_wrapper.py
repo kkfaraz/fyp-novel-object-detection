@@ -5,8 +5,14 @@ import numpy as np
 import time
 
 # Add paths to make sure sam3 and scripts can be imported
-sys.path.insert(0, "/home/faraz/FYP/NOD/FYP_CAP_2/sam3")
-sys.path.insert(0, "/home/faraz/FYP/NOD/FYP_CAP_2/scripts")
+proj_root = str(Path(__file__).resolve().parent.parent)
+sam3_dir = os.path.join(proj_root, "sam3")
+scripts_dir = os.path.join(proj_root, "scripts")
+
+if sam3_dir not in sys.path:
+    sys.path.insert(0, sam3_dir)
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
 
 from sam3.model_builder import build_sam3_image_model
 from sam3_helper import SAM3CallableWrapper
@@ -14,7 +20,9 @@ from sam3_helper import SAM3CallableWrapper
 # Create dummy input
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Loading model...")
-checkpoint_path = "/home/faraz/FYP/NOD/FYP_CAP_2/SAM_weights/sam3.pt"
+checkpoint_path = os.path.join(proj_root, "SAM_weights", "sam3.pt")
+if not os.path.exists(checkpoint_path):
+    checkpoint_path = os.path.join(proj_root, "SAM_weights.pth")
 sam3_model = build_sam3_image_model(
     device=device,
     load_from_HF=False,

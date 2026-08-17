@@ -21,6 +21,7 @@ from detectron2.structures import Instances, Boxes, pairwise_iou
 from pathlib import Path
 from torch import nn
 from segment_anything.utils.amg import batched_mask_to_box
+from adaptive_proposal_fusion import AdaptiveProposalFusion
 
 # ==============================================================================
 # Stage 2: Caption Blacklist (generic/scene descriptions to reject)
@@ -169,9 +170,10 @@ def run_stage1_inference(inputs, param_dict):
         box_predictor.test_nms_thresh = 0.5
         box_predictor.test_score_thresh = 0.0001
 
-    # Use autocast for Mask-RCNN forward pass
-    with torch.cuda.amp.autocast():
-        outputs = rcnn_model(inputs)
+    # Do NOT use autocast for Mask-RCNN. Detectron2 handles its own precision,
+    # and if an OOM occurs, its retry_if_cuda_oom wrapper moves tensors to CPU.
+    # If autocast is enabled, those tensors are FP16, causing grid_sample to crash.
+    outputs = rcnn_model(inputs)
         
     rcnn_boxes = outputs[0]["instances"].pred_boxes.tensor
     rcnn_scores = outputs[0]["instances"].scores
@@ -187,12 +189,14 @@ def run_stage1_inference(inputs, param_dict):
     # 2. Mask R-CNN (RPN / Background Proposals)
     bg_boxes = torch.empty(0, 4, device=device)
     bg_objectness = torch.empty(0, device=device)
+    rpn_proposals_count = 0
     
     if torchvision_maskrcnn is not None:
         image_path = inputs[0]['file_name']
         bg_boxes, bg_objectness, _, _ = extract_rpn_proposals(
             torchvision_maskrcnn, image_path, device
         )
+        rpn_proposals_count = len(bg_boxes)
         
         # GPU Optimization: Reduce proposals
         if len(bg_boxes) > 500:
@@ -205,6 +209,7 @@ def run_stage1_inference(inputs, param_dict):
         bg_boxes_idxs = rcnn_classes == 80
         bg_boxes = rcnn_boxes[bg_boxes_idxs]
         bg_objectness = rcnn_scores[bg_boxes_idxs]
+        rpn_proposals_count = len(bg_boxes)
 
     # 3. GroundingDINO
     gdino_image, _ = prepare_image_for_GDINO(inputs[0], device=device)
@@ -217,9 +222,10 @@ def run_stage1_inference(inputs, param_dict):
     all_out_bbox = []
     all_prob_to_token = []
 
-    # Process GDINO in batches of 3 captions to avoid OOM with 16 GB VRAM
-    GDINO_BATCH_SIZE = 9
-    with torch.no_grad(), torch.cuda.amp.autocast():
+    # Process GDINO in batches of 1 caption to avoid OOM with 12 GB VRAM on large images
+    GDINO_BATCH_SIZE = 1
+    device_type = 'cuda' if 'cuda' in str(device) else 'cpu'
+    with torch.no_grad(), torch.autocast(device_type=device_type, enabled=(device_type == 'cuda')):
         for i in range(0, len(text_prompt_list), GDINO_BATCH_SIZE):
             batch_captions = text_prompt_list[i:i+GDINO_BATCH_SIZE]
             batched_image = gdino_image.repeat(len(batch_captions), 1, 1, 1)
@@ -354,6 +360,7 @@ def run_stage1_inference(inputs, param_dict):
         "image_id": inputs[0]['image_id'],
         "height": h,
         "width": w,
+        "rpn_proposals": rpn_proposals_count,
         "known": {
             "boxes": known_boxes,
             "scores": known_scores,
@@ -543,19 +550,25 @@ def run_stage3_inference(stage1_out, stage2_out_bg, param_dict):
         labels = torch.empty(0, dtype=torch.int64, device=device)
         scores = torch.empty(0, device=device)
         
-    # Visualization
+    # Visualization — draw ALL detections above the display threshold
     if visualize:
-        result = Instances((stage1_out["height"], stage1_out["width"]))
-        result.pred_boxes = Boxes(boxes[:5])
-        result.scores = scores[:5]
-        result.pred_classes = labels[:5]
+        vis_score_threshold = 0.30  # Show all detections that appear in the resolved list
+        vis_mask = scores >= vis_score_threshold
+        vis_boxes = boxes[vis_mask] if vis_mask.any() else boxes[:5]
+        vis_scores = scores[vis_mask] if vis_mask.any() else scores[:5]
+        vis_labels = labels[vis_mask] if vis_mask.any() else labels[:5]
+
+        result_vis = Instances((stage1_out["height"], stage1_out["width"]))
+        result_vis.pred_boxes = Boxes(vis_boxes)
+        result_vis.scores = vis_scores
+        result_vis.pred_classes = vis_labels
         
         meta_data = MetadataCatalog.get(lvis_data_split)
         Path(f"{out_dir}/output_images").mkdir(parents=True, exist_ok=True)
         
         # Draw on original image
         v = BBoxVisualizer(curr_image, meta_data, scale=1.2)
-        out = v.draw_instance_predictions(result)
+        out = v.draw_instance_predictions(result_vis)
         cv2.imwrite(f"{out_dir}/output_images/{stage1_out['file_name'].split('/')[-1]}", out.get_image()[:, :, ::-1])
 
     # Format Output for Evaluator

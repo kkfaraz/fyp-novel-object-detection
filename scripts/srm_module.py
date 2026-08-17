@@ -37,10 +37,9 @@ class ScoreRefinementModule:
     which normalizes both detector confidence scores and SAM mask quality
     scores before combining them via element-wise multiplication.
     
-    Args:
-        per_image_norm (bool): If True, normalize scores per-image to avoid
-            cross-image ranking issues. If False, use global normalization
-            (paper's approach). Default: True (more stable).
+    Note: `per_image_norm` parameter is accepted for backward compatibility
+    but is unused — normalization is always per-batch (which is per-image
+    since each call processes one image's scores).
     
     Example:
         >>> srm = ScoreRefinementModule(per_image_norm=True)
@@ -52,13 +51,7 @@ class ScoreRefinementModule:
     """
     
     def __init__(self, per_image_norm=True):
-        """
-        Initialize the Score Refinement Module.
-        
-        Args:
-            per_image_norm: Whether to normalize per-image (recommended)
-        """
-        self.per_image_norm = per_image_norm
+        pass
     
     def refine_scores(self, combined_scores, sam_scores):
         """
@@ -108,7 +101,7 @@ class ScoreRefinementModule:
         return refined.to(dtype=combined_scores.dtype)
     
     def __repr__(self):
-        return f"ScoreRefinementModule(per_image_norm={self.per_image_norm})"
+        return "ScoreRefinementModule()"
 
 
 def apply_srm_refinement(combined_scores, sam_scores, per_image_norm=True):
