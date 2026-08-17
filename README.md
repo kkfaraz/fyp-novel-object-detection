@@ -8,7 +8,7 @@ Official implementation of our paper "Training-Free Novel Object Detection using
 
 ---
 
-![/kkfaraz/fyp-novel-object-detection/blob/main/CAP_2.png]
+![CAP_2](https://raw.githubusercontent.com/kkfaraz/fyp-novel-object-detection/main/CAP_2.png)
 
 > **Abstract:** Traditional object detection systems operate under the closed-set assumption, recognizing only a fixed set of categories seen during training and treating everything else as background. This constraint severely limits their reliability in real-world settings — autonomous driving, surveillance, and safety-critical monitoring — where novel and rare objects appear frequently. We present an improved training-free Novel Object Detection (NOD) framework that transforms closed-set detectors into open-set detectors through cooperative integration of frozen foundational models.
 >
